@@ -43,71 +43,104 @@ jobs:
       - name: Create VNet and Subnets
         run: |
           echo "Creating VNet and Subnets..."
-          az network vnet create \
-            --resource-group $RG \
-            --name $VNET \
-            --address-prefix 10.0.0.0/16 \
-            --subnet-name WebSubnet \
-            --subnet-prefix 10.0.1.0/24
 
-          az network vnet subnet create \
-            --resource-group $RG \
-            --vnet-name $VNET \
-            --name AppSubnet \
-            --address-prefix 10.0.2.0/24
+          # Create VNet only if it doesn't exist
+          if ! az network vnet show --resource-group $RG --name $VNET &>/dev/null; then
+            az network vnet create \
+              --resource-group $RG \
+              --name $VNET \
+              --address-prefix 10.0.0.0/16 \
+              --subnet-name WebSubnet \
+              --subnet-prefix 10.0.1.0/24
+          else
+            echo "VNet $VNET already exists, skipping..."
+          fi
 
-          az network vnet subnet create \
-            --resource-group $RG \
-            --vnet-name $VNET \
-            --name DBSubnet \
-            --address-prefix 10.0.3.0/24
+          # Create AppSubnet only if it doesn't exist
+          if ! az network vnet subnet show --resource-group $RG --vnet-name $VNET --name AppSubnet &>/dev/null; then
+            az network vnet subnet create \
+              --resource-group $RG \
+              --vnet-name $VNET \
+              --name AppSubnet \
+              --address-prefix 10.0.2.0/24
+          else
+            echo "AppSubnet already exists, skipping..."
+          fi
+
+          # Create DBSubnet only if it doesn't exist
+          if ! az network vnet subnet show --resource-group $RG --vnet-name $VNET --name DBSubnet &>/dev/null; then
+            az network vnet subnet create \
+              --resource-group $RG \
+              --vnet-name $VNET \
+              --name DBSubnet \
+              --address-prefix 10.0.3.0/24
+          else
+            echo "DBSubnet already exists, skipping..."
+          fi
 
       - name: Create Network Security Groups
         run: |
           echo "Creating NSGs..."
-          az network nsg create --resource-group $RG --name WebNSG
-          az network nsg create --resource-group $RG --name AppNSG
-          az network nsg create --resource-group $RG --name DBNSG
+
+          for NSG in WebNSG AppNSG DBNSG; do
+            if ! az network nsg show --resource-group $RG --name $NSG &>/dev/null; then
+              az network nsg create --resource-group $RG --name $NSG
+            else
+              echo "$NSG already exists, skipping..."
+            fi
+          done
 
       - name: Configure NSG Rules
         run: |
           echo "Configuring NSG Rules..."
 
           # WebNSG: Allow SSH from anywhere
-          az network nsg rule create \
-            --resource-group $RG \
-            --nsg-name WebNSG \
-            --name AllowSSH \
-            --priority 1000 \
-            --access Allow \
-            --protocol Tcp \
-            --direction Inbound \
-            --destination-port-range 22 \
-            --source-address-prefix '*'
+          if ! az network nsg rule show --resource-group $RG --nsg-name WebNSG --name AllowSSH &>/dev/null; then
+            az network nsg rule create \
+              --resource-group $RG \
+              --nsg-name WebNSG \
+              --name AllowSSH \
+              --priority 1000 \
+              --access Allow \
+              --protocol Tcp \
+              --direction Inbound \
+              --destination-port-range 22 \
+              --source-address-prefix '*'
+          else
+            echo "AllowSSH rule already exists, skipping..."
+          fi
 
           # AppNSG: Allow all traffic from WebSubnet only
-          az network nsg rule create \
-            --resource-group $RG \
-            --nsg-name AppNSG \
-            --name AllowWeb \
-            --priority 1000 \
-            --access Allow \
-            --protocol Tcp \
-            --direction Inbound \
-            --source-address-prefix 10.0.1.0/24 \
-            --destination-port-range '*'
+          if ! az network nsg rule show --resource-group $RG --nsg-name AppNSG --name AllowWeb &>/dev/null; then
+            az network nsg rule create \
+              --resource-group $RG \
+              --nsg-name AppNSG \
+              --name AllowWeb \
+              --priority 1000 \
+              --access Allow \
+              --protocol Tcp \
+              --direction Inbound \
+              --source-address-prefix 10.0.1.0/24 \
+              --destination-port-range '*'
+          else
+            echo "AllowWeb rule already exists, skipping..."
+          fi
 
           # DBNSG: Allow all traffic from AppSubnet only
-          az network nsg rule create \
-            --resource-group $RG \
-            --nsg-name DBNSG \
-            --name AllowApp \
-            --priority 1000 \
-            --access Allow \
-            --protocol Tcp \
-            --direction Inbound \
-            --source-address-prefix 10.0.2.0/24 \
-            --destination-port-range '*'
+          if ! az network nsg rule show --resource-group $RG --nsg-name DBNSG --name AllowApp &>/dev/null; then
+            az network nsg rule create \
+              --resource-group $RG \
+              --nsg-name DBNSG \
+              --name AllowApp \
+              --priority 1000 \
+              --access Allow \
+              --protocol Tcp \
+              --direction Inbound \
+              --source-address-prefix 10.0.2.0/24 \
+              --destination-port-range '*'
+          else
+            echo "AllowApp rule already exists, skipping..."
+          fi
 
       - name: Associate NSGs with Subnets
         run: |
@@ -130,46 +163,58 @@ jobs:
       - name: Deploy WebVM (Public)
         run: |
           echo "Deploying WebVM..."
-          az vm create \
-            --resource-group $RG \
-            --location $LOCATION \
-            --name WebVM \
-            --image Ubuntu2204 \
-            --vnet-name $VNET \
-            --subnet WebSubnet \
-            --size Standard_D2s_v3 \
-            --admin-username azureuser \
-            --ssh-key-value "${{ secrets.AZURE_SSH_PUBLIC_KEY }}"
+          if ! az vm show --resource-group $RG --name WebVM &>/dev/null; then
+            az vm create \
+              --resource-group $RG \
+              --location $LOCATION \
+              --name WebVM \
+              --image Ubuntu2204 \
+              --vnet-name $VNET \
+              --subnet WebSubnet \
+              --size Standard_D2s_v3 \
+              --admin-username azureuser \
+              --ssh-key-value "${{ secrets.AZURE_SSH_PUBLIC_KEY }}"
+          else
+            echo "WebVM already exists, skipping..."
+          fi
 
       - name: Deploy AppVM (Private)
         run: |
           echo "Deploying AppVM..."
-          az vm create \
-            --resource-group $RG \
-            --location $LOCATION \
-            --name AppVM \
-            --image Ubuntu2204 \
-            --vnet-name $VNET \
-            --subnet AppSubnet \
-            --size Standard_D2s_v3 \
-            --admin-username azureuser \
-            --ssh-key-value "${{ secrets.AZURE_SSH_PUBLIC_KEY }}" \
-            --public-ip-address ""
+          if ! az vm show --resource-group $RG --name AppVM &>/dev/null; then
+            az vm create \
+              --resource-group $RG \
+              --location $LOCATION \
+              --name AppVM \
+              --image Ubuntu2204 \
+              --vnet-name $VNET \
+              --subnet AppSubnet \
+              --size Standard_D2s_v3 \
+              --admin-username azureuser \
+              --ssh-key-value "${{ secrets.AZURE_SSH_PUBLIC_KEY }}" \
+              --public-ip-address ""
+          else
+            echo "AppVM already exists, skipping..."
+          fi
 
       - name: Deploy DBVM (Private)
         run: |
           echo "Deploying DBVM..."
-          az vm create \
-            --resource-group $RG \
-            --location $LOCATION \
-            --name DBVM \
-            --image Ubuntu2204 \
-            --vnet-name $VNET \
-            --subnet DBSubnet \
-            --size Standard_D2s_v3 \
-            --admin-username azureuser \
-            --ssh-key-value "${{ secrets.AZURE_SSH_PUBLIC_KEY }}" \
-            --public-ip-address ""
+          if ! az vm show --resource-group $RG --name DBVM &>/dev/null; then
+            az vm create \
+              --resource-group $RG \
+              --location $LOCATION \
+              --name DBVM \
+              --image Ubuntu2204 \
+              --vnet-name $VNET \
+              --subnet DBSubnet \
+              --size Standard_D2s_v3 \
+              --admin-username azureuser \
+              --ssh-key-value "${{ secrets.AZURE_SSH_PUBLIC_KEY }}" \
+              --public-ip-address ""
+          else
+            echo "DBVM already exists, skipping..."
+          fi
 
       - name: Print Deployment Summary
         run: |
@@ -214,4 +259,4 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      
+     
