@@ -1,0 +1,217 @@
+name: Deploy Multi-Tier Azure Infrastructure
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'deploy'
+        type: choice
+        options:
+          - deploy
+          - destroy
+
+env:
+  RG: "MultiTierRG"
+  LOCATION: "canadacentral"
+  VNET: "MultiTierVNet"
+
+jobs:
+  deploy:
+    if: ${{ github.event_name == 'push' || github.event.inputs.action == 'deploy' }}
+    name: Deploy Infrastructure
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Create Resource Group
+        run: |
+          echo "Creating Resource Group..."
+          az group create --name $RG --location $LOCATION
+
+      - name: Create VNet and Subnets
+        run: |
+          echo "Creating VNet and Subnets..."
+          az network vnet create \
+            --resource-group $RG \
+            --name $VNET \
+            --address-prefix 10.0.0.0/16 \
+            --subnet-name WebSubnet \
+            --subnet-prefix 10.0.1.0/24
+
+          az network vnet subnet create \
+            --resource-group $RG \
+            --vnet-name $VNET \
+            --name AppSubnet \
+            --address-prefix 10.0.2.0/24
+
+          az network vnet subnet create \
+            --resource-group $RG \
+            --vnet-name $VNET \
+            --name DBSubnet \
+            --address-prefix 10.0.3.0/24
+
+      - name: Create Network Security Groups
+        run: |
+          echo "Creating NSGs..."
+          az network nsg create --resource-group $RG --name WebNSG
+          az network nsg create --resource-group $RG --name AppNSG
+          az network nsg create --resource-group $RG --name DBNSG
+
+      - name: Configure NSG Rules
+        run: |
+          echo "Configuring NSG Rules..."
+
+          # WebNSG: Allow SSH from anywhere
+          az network nsg rule create \
+            --resource-group $RG \
+            --nsg-name WebNSG \
+            --name AllowSSH \
+            --priority 1000 \
+            --access Allow \
+            --protocol Tcp \
+            --direction Inbound \
+            --destination-port-range 22 \
+            --source-address-prefix '*'
+
+          # AppNSG: Allow all traffic from WebSubnet only
+          az network nsg rule create \
+            --resource-group $RG \
+            --nsg-name AppNSG \
+            --name AllowWeb \
+            --priority 1000 \
+            --access Allow \
+            --protocol Tcp \
+            --direction Inbound \
+            --source-address-prefix 10.0.1.0/24 \
+            --destination-port-range '*'
+
+          # DBNSG: Allow all traffic from AppSubnet only
+          az network nsg rule create \
+            --resource-group $RG \
+            --nsg-name DBNSG \
+            --name AllowApp \
+            --priority 1000 \
+            --access Allow \
+            --protocol Tcp \
+            --direction Inbound \
+            --source-address-prefix 10.0.2.0/24 \
+            --destination-port-range '*'
+
+      - name: Associate NSGs with Subnets
+        run: |
+          echo "Associating NSGs with Subnets..."
+          az network vnet subnet update \
+            --vnet-name $VNET --name WebSubnet \
+            --resource-group $RG \
+            --network-security-group WebNSG
+
+          az network vnet subnet update \
+            --vnet-name $VNET --name AppSubnet \
+            --resource-group $RG \
+            --network-security-group AppNSG
+
+          az network vnet subnet update \
+            --vnet-name $VNET --name DBSubnet \
+            --resource-group $RG \
+            --network-security-group DBNSG
+
+      - name: Deploy WebVM (Public)
+        run: |
+          echo "Deploying WebVM..."
+          az vm create \
+            --resource-group $RG \
+            --location $LOCATION \
+            --name WebVM \
+            --image Ubuntu2204 \
+            --vnet-name $VNET \
+            --subnet WebSubnet \
+            --size Standard_D2s_v3 \
+            --admin-username azureuser \
+            --ssh-key-value "${{ secrets.AZURE_SSH_PUBLIC_KEY }}"
+
+      - name: Deploy AppVM (Private)
+        run: |
+          echo "Deploying AppVM..."
+          az vm create \
+            --resource-group $RG \
+            --location $LOCATION \
+            --name AppVM \
+            --image Ubuntu2204 \
+            --vnet-name $VNET \
+            --subnet AppSubnet \
+            --size Standard_D2s_v3 \
+            --admin-username azureuser \
+            --ssh-key-value "${{ secrets.AZURE_SSH_PUBLIC_KEY }}" \
+            --public-ip-address ""
+
+      - name: Deploy DBVM (Private)
+        run: |
+          echo "Deploying DBVM..."
+          az vm create \
+            --resource-group $RG \
+            --location $LOCATION \
+            --name DBVM \
+            --image Ubuntu2204 \
+            --vnet-name $VNET \
+            --subnet DBSubnet \
+            --size Standard_D2s_v3 \
+            --admin-username azureuser \
+            --ssh-key-value "${{ secrets.AZURE_SSH_PUBLIC_KEY }}" \
+            --public-ip-address ""
+
+      - name: Print Deployment Summary
+        run: |
+          echo "==============================="
+          echo "   Deployment Complete!"
+          echo "==============================="
+          echo ""
+          echo "WebVM Public IP:"
+          az vm show \
+            --resource-group $RG \
+            --name WebVM \
+            --show-details \
+            --query publicIps -o tsv
+
+          echo ""
+          echo "AppVM Private IP:"
+          az vm show \
+            --resource-group $RG \
+            --name AppVM \
+            --show-details \
+            --query privateIps -o tsv
+
+          echo ""
+          echo "DBVM Private IP:"
+          az vm show \
+            --resource-group $RG \
+            --name DBVM \
+            --show-details \
+            --query privateIps -o tsv
+
+  destroy:
+    if: ${{ github.event.inputs.action == 'destroy' }}
+    name: Destroy Infrastructure
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      
